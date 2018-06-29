@@ -206,6 +206,73 @@ class CuckooMap {
     return entry;
   }
 
+  // Insert/update a key value pair
+  // Return the pointer to the inserted entry
+  Entry *Insert(const K &key, V &&value, const H &hasher = H(),
+                const E &eq = E()) {
+    Entry *entry;
+    HashResult primary = Hash(key, hasher);
+
+    EntryIndex idx = FindWithHash(primary, key, eq);
+    if (idx != kInvalidEntryIdx) {
+      entry = &entries_[idx];
+      entry->second = value;
+      return entry;
+    }
+
+    HashResult secondary = HashSecondary(primary);
+
+    int trials = 0;
+
+    while ((entry = AddEntry(primary, secondary, key, value, hasher)) ==
+           nullptr) {
+      if (++trials >= 3) {
+        LOG_FIRST_N(WARNING, 1)
+            << "CuckooMap: Excessive hash colision detected:\n"
+            << bess::debug::DumpStack();
+        return nullptr;
+      }
+
+      // expand the table as the last resort
+      ExpandBuckets(hasher, eq);
+    }
+    return entry;
+  }
+
+  // Emplace/update-in-place a key value pair
+  // Return the pointer to the inserted entry
+  template <typename... Args> Entry *Emplace(const K &key, Args &&... args) {
+    const H &hasher = H();
+    const E &eq = E();
+    Entry *entry;
+    HashResult primary = Hash(key, hasher);
+
+    EntryIndex idx = FindWithHash(primary, key, eq);
+    if (idx != kInvalidEntryIdx) {
+      entry = &entries_[idx];
+      entry->second = V(std::forward<const Args &>(args)...);
+      return entry;
+    }
+
+    HashResult secondary = HashSecondary(primary);
+
+    int trials = 0;
+
+    while ((entry = EmplaceEntry(primary, secondary, key, hasher, args...)) ==
+           nullptr) {
+      if (++trials >= 3) {
+        LOG_FIRST_N(WARNING, 1)
+            << "CuckooMap: Excessive hash colision detected:\n"
+            << bess::debug::DumpStack();
+        return nullptr;
+      }
+
+      // expand the table as the last resort
+      ExpandBuckets(hasher, eq);
+    }
+    return entry;
+  }
+
   // Find the pointer to the stored value by the key.
   // Return nullptr if not exist.
   Entry* Find(const K& key, const H& hasher = H(), const E& eq = E()) {
@@ -324,6 +391,30 @@ class CuckooMap {
     return &entry;
   }
 
+  // Try to add (key, value) to the bucket indexed by bucket_idx
+  // Return the pointer to the entry if success. Otherwise return nullptr.
+  template <typename... Args>
+  Entry *EmplaceInBucket(HashResult bucket_idx, const K &key, const H &hasher,
+                         Args &&... args) {
+    Bucket &bucket = buckets_[bucket_idx];
+    int slot_idx = FindEmptySlot(bucket);
+    if (slot_idx == -1) {
+      return nullptr;
+    }
+
+    EntryIndex free_idx = PopFreeEntryIndex();
+
+    bucket.hash_values[slot_idx] = Hash(key, hasher);
+    bucket.entry_indices[slot_idx] = free_idx;
+
+    Entry &entry = entries_[free_idx];
+    entry.first = key;
+    entry.second = V(std::forward<const Args &>(args)...);
+
+    num_entries_++;
+    return &entry;
+  }
+
   // Remove key from the bucket indexed by bucket_idx
   // Return true if success.
   bool RemoveFromBucket(HashResult primary, HashResult bucket_idx, const K& key,
@@ -378,6 +469,37 @@ class CuckooMap {
     secondary_bucket_index = secondary & bucket_mask_;
     if ((entry = AddToBucket(secondary_bucket_index, key, value, hasher)) !=
         nullptr) {
+      return entry;
+    }
+
+    if (MakeSpace(primary_bucket_index, 0, hasher) >= 0) {
+      goto again;
+    }
+
+    if (MakeSpace(secondary_bucket_index, 0, hasher) >= 0) {
+      goto again;
+    }
+
+    return nullptr;
+  }
+
+  // Try to add the entry (key, value)
+  // Return the pointer to the entry if success. Otherwise return nullptr.
+  template <typename... Args>
+  Entry *EmplaceEntry(HashResult primary, HashResult secondary, const K &key,
+                      const H &hasher, Args &&... args) {
+    HashResult primary_bucket_index, secondary_bucket_index;
+    Entry *entry = nullptr;
+  again:
+    primary_bucket_index = primary & bucket_mask_;
+    if ((entry = EmplaceInBucket(primary_bucket_index, key, hasher, args...)) !=
+        nullptr) {
+      return entry;
+    }
+
+    secondary_bucket_index = secondary & bucket_mask_;
+    if ((entry = EmplaceInBucket(secondary_bucket_index, key, hasher,
+                                 args...)) != nullptr) {
       return entry;
     }
 

@@ -45,6 +45,35 @@ TEST(CuckooMapTest, Insert) {
   EXPECT_EQ(cuckoo.Insert(1, 1)->second, 1);
 }
 
+struct Foo {
+  Foo() : a(), b(), c() {}
+
+  explicit Foo(int aa, int bb, int cc) : a(aa), b(bb), c(cc) {}
+
+  int a;
+  int b;
+  int c;
+};
+
+// Test Move-Insert function
+TEST(CuckooMapTest, MoveInsert) {
+  CuckooMap<uint32_t, Foo> cuckoo;
+  Foo expected = Foo(1, 2, 3);
+  const Foo &x = cuckoo.Insert(1, expected)->second;
+  EXPECT_EQ(1, x.a);
+  EXPECT_EQ(2, x.b);
+  EXPECT_EQ(3, x.c);
+}
+
+// Test Emplace function
+TEST(CuckooMapTest, Emplace) {
+  CuckooMap<uint32_t, Foo> cuckoo;
+  const Foo &x = cuckoo.Emplace(1, 1, 2, 3)->second;
+  EXPECT_EQ(1, x.a);
+  EXPECT_EQ(2, x.b);
+  EXPECT_EQ(3, x.c);
+}
+
 // Test Find function
 TEST(CuckooMapTest, Find) {
   CuckooMap<uint32_t, uint16_t> cuckoo;
